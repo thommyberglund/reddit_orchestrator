@@ -1,0 +1,225 @@
+%% Reddit Orchestrator - Class Diagram (Multi-Store Architecture)
+%% ==============================================================
+
+classDiagram
+    %% =========== MODELS (Core Data Structures) ===========
+    
+    class RedditData {
+        +Post post
+        +List~Comment~ comments
+        +List~User~ users
+        +to_dict() dict
+        +to_json_ld() dict
+    }
+
+    class Post {
+        +str title
+        +str author
+        +str content
+        +str reddit_id
+        +str subreddit
+        +int score
+        +to_dict() dict
+    }
+
+    class Comment {
+        +str id
+        +str author
+        +str content
+        +str parent_id
+        +int depth
+        +str reddit_id
+        +int score
+        +to_dict() dict
+    }
+
+    class User {
+        +str username
+        +to_dict() dict
+    }
+
+    RedditData "1" *-- "1" Post
+    RedditData "1" *-- "0..*" Comment
+    RedditData "1" *-- "0..*" User
+
+    %% =========== CORE COMPONENTS ===========
+    
+    class Extractor {
+        +extract_post_and_comments(data)
+        +extract_post(data, reddit_data)
+        +extract_comments(data, reddit_data)
+        +process_comments(children, parent_id, depth)
+        +extract_users(reddit_data)
+    }
+
+    class KafkaProducer {
+        +produce_message(data, key)
+        +produce_json_ld(json_ld_data)
+        +close()
+    }
+
+    %% =========== MULTI-STORE WRITERS ===========
+    
+    %% --- MinIO Writer (Existing) ---
+    class MinIOStorage {
+        +ensure_bucket_exists(bucket_name)
+        +write_json_to_bucket(bucket, key, data)
+    }
+    
+    class KafkaConsumer {
+        +consume_messages()
+        +consume_single_message()
+        +_process_message(msg)
+        +_write_to_minio(data)
+        +stop()
+        +close()
+    }
+    
+    KafkaConsumer --> MinIOStorage : Uses
+
+    %% --- PgVector Writer (New) ---
+    class PgVectorDB {
+        +connect()
+        +close()
+        +initialize_tables()
+        +store_post(post_data, embeddings)
+        +store_comment(comment_data, embeddings)
+        +store_user(user_data)
+        +log_processing(message_id, status, error)
+    }
+    
+    class EmbeddingGenerator {
+        +load_model()
+        +generate(text) List~float~
+    }
+    
+    class PgVectorWriterConsumer {
+        +start()
+        +stop()
+        +_process_message(msg)
+        +_extract_text(data)
+        +_store_data(data, embeddings)
+    }
+    
+    PgVectorWriterConsumer --> PgVectorDB : Uses
+    PgVectorWriterConsumer --> EmbeddingGenerator : Uses
+    EmbeddingGenerator --> PgVectorDB : Stores embeddings
+
+    %% --- Neo4j Writer (New) ---
+    class Neo4jConnection {
+        +connect()
+        +close()
+        +execute_query(query, params)
+        +execute_write_transaction(query, params)
+    }
+    
+    class EntityExtractor {
+        +extract_from_jsonld(jsonld_data)
+        +extract_from_regular(data)
+    }
+    
+    class KnowledgeGraphBuilder {
+        +initialize_graph()
+        +create_constraints()
+        +create_indexes()
+        +add_entities_and_relationships(entities, relationships)
+    }
+    
+    class Neo4jWriterConsumer {
+        +start()
+        +stop()
+        +_process_message(msg)
+        +_extract_entities_and_relationships(data)
+    }
+    
+    Neo4jWriterConsumer --> Neo4jConnection : Uses
+    Neo4jWriterConsumer --> KnowledgeGraphBuilder : Uses
+    KnowledgeGraphBuilder --> EntityExtractor : Uses
+    KnowledgeGraphBuilder --> Neo4jConnection : Uses
+
+    %% =========== POSTGRESQL SCHEMA ===========
+    
+    class reddit_posts {
+        +VARCHAR id (PK)
+        +VARCHAR reddit_id (UNIQUE)
+        +TEXT title
+        +TEXT content
+        +VARCHAR author
+        +VARCHAR subreddit
+        +INTEGER score
+        +TIMESTAMP created_at
+        +JSONB metadata
+    }
+    
+    class reddit_comments {
+        +VARCHAR id (PK)
+        +VARCHAR reddit_id (UNIQUE)
+        +VARCHAR post_id (FK)
+        +TEXT content
+        +VARCHAR author
+        +INTEGER score
+        +INTEGER depth
+        +VARCHAR parent_id
+        +TIMESTAMP created_at
+        +JSONB metadata
+    }
+    
+    class post_embeddings {
+        +VARCHAR id (PK)
+        +VARCHAR post_id (FK)
+        +vector(384) embedding
+        +VARCHAR model_name
+        +TIMESTAMP created_at
+    }
+    
+    class comment_embeddings {
+        +VARCHAR id (PK)
+        +VARCHAR comment_id (FK)
+        +vector(384) embedding
+        +VARCHAR model_name
+        +TIMESTAMP created_at
+    }
+    
+    reddit_posts "1" -- "0..*" post_embeddings : ON DELETE CASCADE
+    reddit_comments "1" -- "0..*" comment_embeddings : ON DELETE CASCADE
+
+    %% =========== NEO4J SCHEMA ===========
+    
+    class Post {
+        +String id (UNIQUE)
+        +String title
+        +String content
+        +Integer score
+        +String created_at
+    }
+    
+    class Comment {
+        +String id (UNIQUE)
+        +String content
+        +Integer score
+        +Integer depth
+    }
+    
+    class User {
+        +String id (UNIQUE)
+        +String username (UNIQUE)
+    }
+    
+    class Subreddit {
+        +String id (UNIQUE)
+        +String name (UNIQUE)
+    }
+    
+    Post "1" -- "0..*" Comment : REPLIES_TO
+    User "1" -- "0..*" Post : AUTHORED
+    User "1" -- "0..*" Comment : AUTHORED
+    Post "1" -- "1" Subreddit : POSTED_IN
+    Comment "1" -- "0..*" Comment : REPLIES_TO
+
+    %% =========== RELATIONSHIPS ===========
+    
+    Extractor --> RedditData : Creates
+    KafkaProducer --> RedditData : Serializes
+    KafkaConsumer --> MinIOStorage : Uses
+    PgVectorWriterConsumer --> RedditData : Processes
+    Neo4jWriterConsumer --> RedditData : Processes

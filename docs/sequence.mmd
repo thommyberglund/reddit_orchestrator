@@ -1,0 +1,79 @@
+%% Reddit Orchestrator - Event-Driven Pipeline Sequence Diagram
+%% ============================================================
+
+sequenceDiagram
+    participant Client
+    participant Flask as Flask API
+    participant Extractor
+    participant Models
+    participant Producer as Kafka Producer
+    participant Kafka
+    participant MinIOWriter as MinIO Writer
+    participant PgVectorWriter as PgVector Writer
+    participant Neo4jWriter as Neo4j Writer
+    participant MinIO
+    participant PostgreSQL
+    participant Neo4j
+
+    %% === ASYNCHRONOUS FLOW === 
+    
+    %% Step 1: Client sends data to Flask API
+    Client->>Flask: POST /api/reddit (Reddit JSON)
+    Flask->>Extractor: extract_post_and_comments(data)
+    Extractor->>Models: Create RedditData object
+    Models-->>Extractor: RedditData(post, comments, users)
+    Extractor-->>Flask: RedditData
+
+    %% Step 2: Convert to JSON-LD and send to Kafka
+    Flask->>Models: to_json_ld()
+    Models-->>Flask: JSON-LD formatted data
+    Flask->>Producer: produce_json_ld(json_ld_data)
+    Producer->>Kafka: Send message to "reddit-data" topic
+    
+    %% Step 3: Flask returns IMMEDIATELY (non-blocking)
+    Kafka-->>Producer: Acknowledge
+    Producer-->>Flask: Success
+    Flask-->>Client: HTTP 200 Response (Fast!)
+
+    %% Step 4: Parallel asynchronous processing
+    %% All three writers consume from Kafka independently
+    
+    %% MinIO Writer Path
+    Kafka->>MinIOWriter: Poll for messages
+    MinIOWriter->>Kafka: Subscribe to "reddit-data"
+    Kafka-->>MinIOWriter: JSON-LD message
+    MinIOWriter->>MinIO: write_json_to_bucket("reddit-posts")
+    MinIO-->>MinIOWriter: Write successful
+    
+    %% PgVector Writer Path
+    Kafka->>PgVectorWriter: Poll for messages
+    PgVectorWriter->>Kafka: Subscribe to "reddit-data"
+    Kafka-->>PgVectorWriter: JSON-LD message
+    PgVectorWriter->>PgVectorWriter: Extract text content
+    PgVectorWriter->>PgVectorWriter: Generate embeddings (LLM)
+    PgVectorWriter->>PostgreSQL: Store post metadata
+    PgVectorWriter->>PostgreSQL: Store comment metadata
+    PgVectorWriter->>PostgreSQL: Store vector embeddings
+    PostgreSQL-->>PgVectorWriter: Write successful
+    
+    %% Neo4j Writer Path
+    Kafka->>Neo4jWriter: Poll for messages
+    Neo4jWriter->>Kafka: Subscribe to "reddit-data"
+    Kafka-->>Neo4jWriter: JSON-LD message
+    Neo4jWriter->>Neo4jWriter: Extract entities & relationships
+    Neo4jWriter->>Neo4j: MERGE nodes (Post, Comment, User, Subreddit)
+    Neo4jWriter->>Neo4j: MERGE relationships (AUTHORED, POSTED_IN, REPLIES_TO)
+    Neo4j-->>Neo4jWriter: Write successful
+
+%% ==================== KEY DIFFERENCES ====================
+%% 
+%% OLD (Synchronous):
+%%   Client -> Flask -> Extractor -> Models -> Kafka -> MinIO -> Response
+%%   (All in one blocking request)
+%% 
+%% NEW (Asynchronous):
+%%   Client -> Flask -> Kafka -> Response (FAST)
+%%          Kafka -> MinIO Writer -> MinIO
+%%          Kafka -> PgVector Writer -> PostgreSQL
+%%          Kafka -> Neo4j Writer -> Neo4j
+%%   (All writers work in parallel, independently)

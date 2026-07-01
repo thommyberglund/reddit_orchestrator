@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: reddit_handler_py
+    env_file:
+      - .env
+    environment:
+      - FLASK_ENV=production
+    ports:
+      - "8081:8080"
+    volumes:
+      - .:/app
+    working_dir: /app
+    restart: unless-stopped
+    depends_on:
+      - kafka
+
+  kafka-consumer:
+    build: .
+    container_name: reddit_handler_consumer
+    env_file:
+      - .env
+    environment:
+      - KAFKA_CONSUMER_GROUP=reddit-handler-py-consumer-docker
+      - KAFKA_AUTO_OFFSET_RESET=earliest
+      - RUSTFS_ENDPOINT=192.168.1.1
+      - RUSTFS_PORT=9000
+      - RUSTFS_ACCESS_KEY=rustfsadmin
+      - RUSTFS_SECRET_KEY=rustfsadmin
+      - RUSTFS_SECURE=false
+      - RUSTFS_POSTS_BUCKET=reddit-posts
+      - RUSTFS_COMMENTS_BUCKET=reddit-comments
+    command: python kafka_consumer.py
+    volumes:
+      - .:/app
+    working_dir: /app
+    restart: unless-stopped
+    depends_on:
+      - kafka
+
+  pgvector-writer:
+    build: .
+    container_name: reddit_pgvector_writer
+    env_file:
+      - .env
+    environment:
+      - KAFKA_CONSUMER_GROUP=pgvector-writer-docker
+      - KAFKA_AUTO_OFFSET_RESET=earliest
+      - PG_HOST=192.168.1.1
+      - PG_PORT=5432
+      - PG_DATABASE=reddit_data
+      - PG_USER=postgres
+      - PG_PASSWORD=postgres
+    command: python pgvector_writer.py
+    volumes:
+      - .:/app
+    working_dir: /app
+    restart: unless-stopped
+    depends_on:
+      - kafka
+
+  neo4j-writer:
+    build: .
+    container_name: reddit_neo4j_writer
+    env_file:
+      - .env
+    environment:
+      - KAFKA_CONSUMER_GROUP=neo4j-writer-docker
+      - KAFKA_AUTO_OFFSET_RESET=earliest
+      - NEO4J_URI=bolt://192.168.1.1:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=neo4j
+    command: python neo4j_writer.py
+    volumes:
+      - .:/app
+    working_dir: /app
+    restart: unless-stopped
+    depends_on:
+      - kafka

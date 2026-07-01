@@ -1,0 +1,17 @@
+{
+	"name": "Python with uv",
+	"dockerFile": "Dockerfile",
+	"features": {
+		"ghcr.io/devcontainers/features/git:1": {},
+		"ghcr.io/devcontainers/features/github-cli:1": {}
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": ["ms-python.python"]
+		}
+	},
+	"remoteUser": "vscode",
+	"workspaceFolder": "/workspace",
+	"mounts": ["source=${localWorkspaceFolder},target=/workspace,type=bind"],
+	"postCreateCommand": "uv pip install -r /workspace/pyproject.toml"
+}

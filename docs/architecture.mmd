@@ -1,0 +1,118 @@
+%% Reddit Orchestrator - Multi-Store Architecture Diagram
+%% =====================================================
+
+flowchart TD
+    %% ==================== EXTERNAL SYSTEMS ====================
+    subgraph External["External Systems"]
+        direction TB
+        Reddit[("Reddit API\n(JSON Data)")]
+        Kafka[("Kafka Cluster\n(192.168.1.1:9092)")]
+        MinIO[("MinIO Storage\n(192.168.1.1:9000)")]
+        PostgreSQL[("PostgreSQL + pgvector\n(192.168.1.1:5432)")]
+        Neo4j[("Neo4j\n(192.168.1.1:7687)")]
+    end
+
+    %% ==================== APPLICATION ====================
+    subgraph Application["Reddit Orchestrator Application"]
+        direction TB
+
+        %% --- Flask API Layer ---
+        subgraph FlaskAPI["Flask API (app.py)"]
+            A1["POST /api/reddit"]
+            A2["GET /health"]
+            A3["GET /"]
+        end
+
+        %% --- Core Components ---
+        A1 -->|"JSON Data"| Extractor
+        Extractor[("Extractor\n(extractor.py)")]
+        Extractor -->|"RedditData\nObject"| Models
+        Models[("Models\n(models.py)")]
+        Models -->|"JSON-LD Format"| KafkaProducer
+        KafkaProducer[("Kafka Producer\n(kafka_producer.py)")]
+
+        %% --- Kafka Consumers (Event-Driven Writers) ---
+        subgraph Writers["Kafka Consumers"]
+            MinIOWriter[("MinIO Writer\n(kafka_consumer.py)")]
+            PgVectorWriter[("PgVector Writer\n(pgvector_writer.py)")]
+            Neo4jWriter[("Neo4j Writer\n(neo4j_writer.py)")]
+        end
+    end
+
+    %% ==================== DATA STORAGE ====================
+    subgraph Storage["Storage Layers"]
+        direction TB
+        
+        subgraph MinIOStorage["MinIO (Raw Storage)"]
+            PostsBucket[("reddit-posts\nBucket")]
+            CommentsBucket[("reddit-comments\nBucket")]
+        end
+        
+        subgraph PgVectorStorage["PostgreSQL (Semantic DB)"]
+            PostsTable[("reddit_posts\nTable")]
+            CommentsTable[("reddit_comments\nTable")]
+            EmbeddingsTable[("post_embeddings\n+ vector index")]
+        end
+        
+        subgraph Neo4jStorage["Neo4j (Knowledge Graph)"]
+            Nodes[("Nodes\n(Post, Comment, User, Subreddit)")]
+            Relationships[("Relationships\n(AUTHORED, POSTED_IN, REPLIES_TO)")]
+        end
+    end
+
+    %% ==================== DOCKER ====================
+    subgraph Docker["Docker (docker-compose.yml)"]
+        AppContainer["app:8081\n(Flask Server)"]
+        MinIOWriterContainer["kafka-consumer\n(MinIO Writer)"]
+        PgVectorWriterContainer["pgvector-writer\n(PgVector Writer)"]
+        Neo4jWriterContainer["neo4j-writer\n(Neo4j Writer)"]
+    end
+
+    %% ==================== DATA FLOW ====================
+    %% External to Application
+    Reddit -->|"1. HTTP POST\nReddit JSON"| A1
+    KafkaProducer -->|"2. Produce\nJSON-LD Messages"| Kafka
+    
+    %% Kafka to Writers (Event-Driven)
+    Kafka -->|"3. Consume\nRaw Messages"| MinIOWriter
+    Kafka -->|"3. Consume\nRaw Messages"| PgVectorWriter
+    Kafka -->|"3. Consume\nRaw Messages"| Neo4jWriter
+
+    %% Application Internal Flow
+    A1 -->|"Raw JSON"| Extractor
+    Extractor -->|"Extract\nPosts/Comments"| Models
+    Models -->|"to_json_ld()"| KafkaProducer
+
+    %% Writers to Storage
+    MinIOWriter -->|"4. Write Raw\nJSON Files"| PostsBucket
+    MinIOWriter -->|"4. Write Raw\nJSON Files"| CommentsBucket
+    
+    PgVectorWriter -->|"4. Store\nMetadata"| PostsTable
+    PgVectorWriter -->|"4. Store\nMetadata"| CommentsTable
+    PgVectorWriter -->|"4. Store\nVectors"| EmbeddingsTable
+    
+    Neo4jWriter -->|"4. Create\nNodes"| Nodes
+    Neo4jWriter -->|"4. Create\nRelationships"| Relationships
+
+    %% Docker Flow
+    AppContainer -->|"Runs"| FlaskAPI
+    AppContainer -->|"Runs"| KafkaProducer
+    MinIOWriterContainer -->|"Runs"| MinIOWriter
+    PgVectorWriterContainer -->|"Runs"| PgVectorWriter
+    Neo4jWriterContainer -->|"Runs"| Neo4jWriter
+
+    %% ==================== STYLES ====================
+    classDef external fill:#f9f,stroke:#333,stroke-width:2px,color:#000
+    classDef application fill:#e6f3ff,stroke:#0066cc,stroke-width:2px,color:#000
+    classDef storage fill:#e6ffe6,stroke:#008000,stroke-width:2px,color:#000
+    classDef docker fill:#fff2e6,stroke:#cc6600,stroke-width:2px,color:#000
+    classDef endpoint fill:#fff,stroke:#666,stroke-width:1px,color:#000
+    classDef writer fill:#fffacd,stroke:#ff8c00,stroke-width:2px,color:#000
+
+    class Reddit,Kafka,MinIO,PostgreSQL,Neo4j external
+    class FlaskAPI,Extractor,Models,KafkaProducer application
+    class MinIOStorage,PgVectorStorage,Neo4jStorage storage
+    class Docker docker
+    class A1,A2,A3 endpoint
+    class MinIOWriter,PgVectorWriter,Neo4jWriter writer
+    class MinIOWriterContainer,PgVectorWriterContainer,Neo4jWriterContainer docker
